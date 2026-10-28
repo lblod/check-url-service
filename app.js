@@ -4,6 +4,10 @@ import bodyParser from 'body-parser';
 
 app.use(bodyParser.json());
 
+app.get('/', (req, res) => {
+    res.send("Hello from the check-url-service.");
+});
+
 app.post('/check', async function( req, res ) {
     const urlInput = req.body?.url;
 
