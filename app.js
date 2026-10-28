@@ -5,33 +5,56 @@ import bodyParser from 'body-parser';
 app.use(bodyParser.json());
 
 app.post('/check', async function( req, res ) {
-    const { url } = req.body;
+    const urlInput = req.body?.url;
 
-    if (!url) {
-    return res.status(400).json({
-        error: 'URL is required',
-    });
+    if (!urlInput) {
+        return res.status(400).json({
+            error: 'URL is required',
+        });
+    }
+
+    if (typeof urlInput !== 'string' || !urlInput.trim()) {
+        return res.status(400).json({
+            error: 'A valid URL is required',
+        });
+    }
+
+    let parsedUrl;
+
+    try {
+        parsedUrl = new URL(urlInput);
+    } catch {
+        return res.status(400).json({
+            error: 'Invalid URL',
+        });
+    }
+
+    if (parsedUrl.username || parsedUrl.password) {
+        return res.status(400).json({
+            error: 'URLs containing credentials are not supported',
+        });
     }
 
     try {
-    const result = await new Promise((resolve, reject) => {
-        linkCheck(url, { timeout: '1s' }, (error, result) => {
-            if (error) {
-                reject(error);
-            } else {
-                resolve(result);
-            }
+        const result = await new Promise((resolve, reject) => {
+            linkCheck(parsedUrl.href, { timeout: '3s', retryOn429: false }, (error, result) => {
+                if (error) {
+                    reject(error);
+                } else {
+                    resolve(result);
+                }
+            });
         });
-    });
 
-    res.json({
-        url: result.link,
-        status: result.status,
-        statusCode: result.statusCode,
-    });
+        res.json({
+            url: result.link,
+            status: result.status,
+            statusCode: result.statusCode,
+        });
     } catch (error) {
-        res.status(500).json({
-            error: 'Unable to check the link ' + url,
+        console.error('Link check failed');
+        res.status(502).json({
+            error: 'Unable to check the URL',
         });
     }
 });
