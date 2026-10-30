@@ -41,7 +41,7 @@ app.post('/check', async function( req, res ) {
 
     try {
         const result = await new Promise((resolve, reject) => {
-            linkCheck(parsedUrl.href, { timeout: '3s', retryOn429: false }, (error, result) => {
+            linkCheck(parsedUrl.href, { timeout: '10s', retryOn429: false }, (error, result) => {
                 if (error) {
                     reject(error);
                 } else {
