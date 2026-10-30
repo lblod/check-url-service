@@ -1,9 +1,9 @@
 # check-url-service
 Microservice for checking whether or not (external) URLs can be accessed without authentication.
-The service uses the (link-check package)[https://www.npmjs.com/package/link-check] to test whether or not a given URL is dead or alive.
+The service uses the (link-check package)[https://www.npmjs.com/package/link-check] to test whether or not a given URL is reachable.
 
 ## How it works
-The service uses the link-check package to test out if a given link is `alive` or `dead`. The status `dead` could also mean unauthorized. Upon success, the service sends back JSON with the link, its status (`alive`, `dead` or null) and the HTTP status code.
+The service uses the link-check package to test out whether a given link can be reached. Upon success, the service sends back JSON with the link, a boolean `status` (`true` when reachable, `false` otherwise) and the HTTP status code.
 
 ## Installation
 ### Docker compose
@@ -56,15 +56,14 @@ Successful response:
 ```json
 {
   "url": "https://example.com",
-  "status": "alive",
+  "status": true,
   "statusCode": 200
 }
 ```
 
-Possible `status` values are:
-- `alive`
-- `dead`
-- `null` (when the link checker does not provide a concrete status)
+The `status` field is a boolean:
+- `true` when the URL is reachable
+- `false` when it is not reachable or the link checker reports it as unavailable
 
 Error responses:
 - `400 Bad Request`: missing or invalid URL

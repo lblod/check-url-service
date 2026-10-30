@@ -52,7 +52,7 @@ app.post('/check', async function( req, res ) {
 
         res.json({
             url: result.link,
-            status: result.status,
+            status: result.status === 'alive',
             statusCode: result.statusCode,
         });
     } catch (error) {
