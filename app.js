@@ -17,7 +17,7 @@ function isPrivateIPv4(ip) {
         (a === 172 && b >= 16 && b <= 31) || // 172.16.0.0/12
         (a === 192 && b === 168) || // 192.168.0.0/16
         a >= 224 // multicast, reserved and broadcast ranges
-      );
+    );
 }
 
 function parseIPv6Groups(part) {
