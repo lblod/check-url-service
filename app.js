@@ -1,6 +1,8 @@
 import { app } from 'mu';
 import bodyParser from 'body-parser';
-import { lookup } from 'node:dns/promises';
+import { Agent } from 'undici';
+import { lookup as dnsLookup } from 'node:dns/promises';
+import { isIP } from 'node:net';
 
 const REQUEST_TIMEOUT_MS = 10_000;
 
@@ -127,28 +129,60 @@ function isPrivateAddress({ address, family }) {
     return family === 4 ? isPrivateIPv4(address) : isPrivateIPv6(address);
 }
 
-async function validatePublicUrl(url) {
-    const hostname = url.hostname.replace(/^\[|\]$/g, '');
+async function resolvePublicAddresses(hostname) {
+    const family = isIP(hostname);
 
-    if (!hostname.includes('.') && !hostname.includes(':')) {
-        return false;
+    const addresses = family
+        ? [{ address: hostname, family }]
+        : await dnsLookup(hostname, { all: true, verbatim: true });
+
+    if (!addresses.length || addresses.some(isPrivateAddress)) {
+        throw new Error('The link must point to a public host');
     }
 
-    try {
-        const addresses = hostname.includes(':')
-            ? [{ address: hostname, family: 6 }]
-            : /^[\d.]+$/.test(hostname)
-                ? [{ address: hostname, family: 4 }]
-                : await lookup(hostname, { all: true });
+    return addresses;
+}
 
-        if (!addresses.length) {
-            return false;
+function createPinnedAgent(hostname, addresses) {
+    const normalizedHostname = hostname.toLowerCase();
+
+    const pinnedLookup = (requestedHostname, options, callback) => {
+        if (requestedHostname.toLowerCase() !== normalizedHostname) {
+            return callback(new Error('Unexpected hostname'));
         }
 
-        return !addresses.some(isPrivateAddress);
-    } catch {
-        return false;
-    }
+        let candidates = addresses;
+
+        if (options.family) {
+            candidates = candidates.filter(
+                (entry) => entry.family === options.family
+            );
+        }
+
+        if (!candidates.length) {
+            return callback(new Error('No validated address available'));
+        }
+
+        if (options.all) {
+            return callback(null, candidates);
+        }
+
+        const selected = candidates[0];
+
+        return callback(
+            null,
+            selected.address,
+            selected.family
+        );
+    };
+
+    return new Agent({
+        connections: 1,
+        pipelining: 0,
+        connect: {
+            lookup: pinnedLookup
+        }
+    });
 }
 
 app.get('/', (req, res) => {
@@ -197,17 +231,16 @@ app.post('/check', async (req, res) => {
         });
     }
 
-    const isPublic = await validatePublicUrl(parsedUrl);
-
-    if (!isPublic) {
-        return res.status(400).json({
-            error: 'URLs pointing to private or internal hosts are not supported'
-        });
-    }
+    const hostname = parsedUrl.hostname.replace(/^\[|\]$/g, '');
+    let agent;
 
     try {
+        const addresses = await resolvePublicAddresses(hostname);
+        agent = createPinnedAgent(hostname, addresses);
+
         const response = await fetch(parsedUrl, {
-            redirect: req.body?.follow === true ? 'follow' : 'manual',
+            dispatcher: agent,
+            redirect: 'manual',
             signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS)
         });
 
@@ -224,5 +257,7 @@ app.post('/check', async (req, res) => {
         return res.status(502).json({
             error: 'Unable to check the URL'
         });
+    } finally {
+        await agent?.close();
     }
 });
