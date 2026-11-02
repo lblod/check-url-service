@@ -1,0 +1,11 @@
+{
+    "name": "check-url-service",
+    "version": "1.0.0",
+    "description": "Microservice for checking whether or not (external) URLs can be accessed without authentication",
+    "main": "app.js",
+    "author": "redpencil.io",
+    "license": "MIT",
+    "dependencies": {
+        "link-check": "^5.6.0"
+    }
+}
