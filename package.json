@@ -5,9 +5,6 @@
     "main": "app.js",
     "author": "redpencil.io",
     "license": "MIT",
-    "dependencies": {
-        "link-check": "^5.6.0"
-    },
     "repository": {
         "type": "git",
         "url": "git+https://github.com/lblod/check-url-service.git"
