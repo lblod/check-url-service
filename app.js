@@ -252,8 +252,16 @@ app.post('/check', async (req, res) => {
             statusCode: response.status
         });
     } catch (error) {
-        console.error(`Link check failed for ${parsedUrl.href}:`, error);
+        if (error?.code === 'ENOTFOUND') {
+            return res.json({
+                url: parsedUrl.href,
+                status: false,
+                statusCode: 404
+            });
+        }
 
+        console.error(`Link check failed for ${parsedUrl.href}:`, error);
+        
         return res.status(502).json({
             error: 'Unable to check the URL'
         });
