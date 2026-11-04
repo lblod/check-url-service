@@ -5,6 +5,8 @@ import { lookup as dnsLookup } from 'node:dns/promises';
 import { isIP } from 'node:net';
 
 const REQUEST_TIMEOUT_MS = 10_000;
+const MAX_REDIRECTS = 20; // same limit as browsers and fetch
+const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 
 app.use(bodyParser.json());
 
@@ -129,6 +131,21 @@ function isPrivateAddress({ address, family }) {
     return family === 4 ? isPrivateIPv4(address) : isPrivateIPv6(address);
 }
 
+function assertAllowedUrl(parsedUrl) {
+    if (parsedUrl.username || parsedUrl.password) {
+        throw new Error('URLs containing credentials are not supported');
+    }
+
+    const allowHttp = process.env.VALIDATE_URL_ALLOW_HTTP === 'true';
+
+    if (
+        parsedUrl.protocol !== 'https:' &&
+        !(allowHttp && parsedUrl.protocol === 'http:')
+    ) {
+        throw new Error('Unsupported URL protocol');
+    }
+}
+
 async function resolvePublicAddresses(hostname) {
     const family = isIP(hostname);
 
@@ -214,40 +231,56 @@ app.post('/check', async (req, res) => {
         });
     }
 
-    if (parsedUrl.username || parsedUrl.password) {
+    try {
+        assertAllowedUrl(parsedUrl);
+    } catch (error) {
         return res.status(400).json({
-            error: 'URLs containing credentials are not supported'
+            error: error.message
         });
     }
 
-    const allowHttp = process.env.VALIDATE_URL_ALLOW_HTTP === 'true';
-
-    if (
-        parsedUrl.protocol !== 'https:' &&
-        !(allowHttp && parsedUrl.protocol === 'http:')
-    ) {
-        return res.status(400).json({
-            error: 'Unsupported URL protocol'
-        });
-    }
-
-    const hostname = parsedUrl.hostname.replace(/^\[|\]$/g, '');
+    const signal = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
     let agent;
 
     try {
-        const addresses = await resolvePublicAddresses(hostname);
-        agent = createPinnedAgent(hostname, addresses);
+        let currentUrl = parsedUrl;
+        let response;
 
-        const response = await fetch(parsedUrl, {
-            dispatcher: agent,
-            redirect: 'manual',
-            signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS)
-        });
+        for (let redirects = 0; ; redirects += 1) {
+            const hostname = currentUrl.hostname.replace(/^\[|\]$/g, '');
+            const addresses = await resolvePublicAddresses(hostname);
 
-        await response.body?.cancel();
+            await agent?.close();
+            agent = createPinnedAgent(hostname, addresses);
+
+            response = await fetch(currentUrl, {
+                dispatcher: agent,
+                redirect: 'manual',
+                signal
+            });
+
+            await response.body?.cancel();
+
+            if (!REDIRECT_STATUSES.has(response.status)) {
+                break;
+            }
+
+            if (redirects >= MAX_REDIRECTS) {
+                throw new Error('Too many redirects');
+            }
+
+            const location = response.headers.get('location');
+
+            if (!location) {
+                break;
+            }
+
+            currentUrl = new URL(location, currentUrl);
+            assertAllowedUrl(currentUrl);
+        }
 
         return res.json({
-            url: response.url || parsedUrl.href,
+            url: response.url || currentUrl.href,
             status: response.ok,
             statusCode: response.status
         });
@@ -261,7 +294,7 @@ app.post('/check', async (req, res) => {
         }
 
         console.error(`Link check failed for ${parsedUrl.href}:`, error);
-        
+
         return res.status(502).json({
             error: 'Unable to check the URL'
         });

@@ -2,7 +2,7 @@
 
 Microservice for checking whether an external URL can be reached without authentication.
 
-This service no longer relies on the `link-check` package. It validates the URL, resolves the hostname to public addresses only, makes a direct HTTP request using a pinned HTTP client, and returns the final HTTP result.
+This service no longer relies on the `link-check` package. It validates the URL, resolves the hostname to public addresses only, makes direct HTTP requests using pinned connections while following redirects one hop at a time, and returns the final HTTP result.
 
 ## How it works
 
@@ -13,10 +13,11 @@ The service accepts a URL through `POST /check` and performs the following check
 - credentials in the URL (`user:pass@host`) are rejected
 - only `https:` is allowed by default; `http:` is accepted only when `VALIDATE_URL_ALLOW_HTTP=true`
 - the hostname must resolve to a public address; private, loopback, link-local and other non-public addresses are rejected
-- the request is sent with a 10 second timeout and `redirect: "manual"`
-- the response is returned as JSON with the final URL, a boolean `status`, and the HTTP `statusCode`
+- requests are sent with `redirect: "manual"`; redirect responses (301, 302, 303, 307, 308) are followed one hop at a time, up to 20 redirects, and every redirect target goes through the same checks as the original URL (supported protocol, no credentials, public host)
+- the whole redirect chain is limited to 10 seconds
+- the response of the final hop is returned as JSON with the final URL, a boolean `status`, and the HTTP `statusCode`
 
-The implementation uses Node's built-in `fetch` and Undici with a pinned DNS lookup, which prevents the request from being redirected to a private/internal host.
+The implementation uses Node's built-in `fetch` and Undici with a pinned DNS lookup; every hop in a redirect chain is pinned to the addresses that were validated up front, so redirects can never lead the check to a private or internal host.
 
 ## Installation
 
@@ -77,6 +78,7 @@ Validation rules:
 - URLs containing credentials (`user:pass@host`) are rejected
 - the protocol must be `https:` unless `VALIDATE_URL_ALLOW_HTTP=true`
 - the target host must resolve to a public IP address
+- every redirect target must satisfy the same rules
 
 Successful response:
 
@@ -90,7 +92,7 @@ Successful response:
 
 The `status` field is a boolean:
 
-- `true` when the HTTP response is considered successful (`response.ok`)
+- `true` when the final HTTP response is considered successful (`response.ok`)
 - `false` when the response is not successful or the request fails at the transport level
 
 Error responses:
@@ -101,5 +103,6 @@ Error responses:
 ## Notes
 
 - The service intentionally rejects links to private or local hosts.
-- Redirects are not followed automatically; the service checks the final response as received.
-- The request is limited to 10 seconds to avoid hanging on slow or unreachable endpoints.
+- Redirects are followed one hop at a time.
+- A redirect chain that exceeds 20 redirects, or that redirects to a URL that is not allowed as input (for example plain `http:` while `VALIDATE_URL_ALLOW_HTTP` is not enabled), cannot be checked and results in a `502` response.
+- The entire redirect chain is limited to 10 seconds to avoid hanging on slow or unreachable endpoints.
