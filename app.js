@@ -3,6 +3,7 @@ import bodyParser from 'body-parser';
 import { Agent } from 'undici';
 import { lookup as dnsLookup } from 'node:dns/promises';
 import { isIP } from 'node:net';
+import { getSessionIdHeader, selectAccountBySession } from './session';
 
 const REQUEST_TIMEOUT_MS = 10_000;
 const MAX_REDIRECTS = 20; // same limit as browsers and fetch
@@ -14,20 +15,36 @@ const USER_AGENT =
 
 app.use(bodyParser.json());
 
-app.use('/check', (req, res, next) => {
+app.use('/check', async (req, res, next) => {
     if (!REQUIRE_AUTHENTICATION) {
         return next();
     }
 
-    const allowedGroups = req.get('mu-auth-allowed-groups');
+    const sessionId = getSessionIdHeader(req);
 
-    if (allowedGroups?.trim() && allowedGroups.trim() !== '<>') {
-        return next();
+    if (!sessionId) {
+        return res.status(401).json({
+            error: 'Authentication required'
+        });
     }
 
-    return res.status(401).json({
-        error: 'Authentication is required to use this service'
-    });
+    try {
+        const { accountUri } = await selectAccountBySession(sessionId);
+
+        if (!accountUri) {
+            return res.status(401).json({
+                error: 'Invalid session'
+            });
+        }
+
+        return next();
+    } catch (error) {
+        console.error('Failed to validate session:', error);
+
+        return res.status(503).json({
+            error: 'Unable to validate session'
+        });
+    }
 });
 
 function isPrivateIPv4(ip) {

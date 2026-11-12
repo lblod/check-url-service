@@ -81,11 +81,17 @@ Validation rules:
 - the target host must resolve to a public IP address
 - every redirect target must satisfy the same rules
 
-The endpoint is restricted to authenticated users. The dispatcher performs the authentication and forwards the session's allowed groups in the `mu-auth-allowed-groups` header; requests that lack this header (or carry the empty group `<>`, i.e. an anonymous session) receive:
+The endpoint is restricted to authenticated users. Unauthenticated calls recieve the response:
 
 - `401 Unauthorized`: no authenticated user session was provided
 
 This behavior is controlled by the `REQUIRE_AUTHENTICATION` environment variable. By default authentication is required. Set the variable to `false` to disable authentication.
+
+The following variables used in the authentication can be adjusted:
+
+- `ACCOUNT_GRAPH_TEMPLATE`
+- `SESSION_GRAPH`
+- `MU_APPLICATION_GRAPH`
 
 Successful response:
 

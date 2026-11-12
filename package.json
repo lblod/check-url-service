@@ -10,6 +10,7 @@
         "url": "git+https://github.com/lblod/check-url-service.git"
     },
     "dependencies": {
+        "@lblod/mu-auth-sudo": "^1.1.0",
         "undici": "^6.29.1"
     }
 }
