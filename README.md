@@ -2,7 +2,7 @@
 
 Microservice for checking whether an external URL can be reached without authentication.
 
-This service no longer relies on the `link-check` package. It validates the URL, resolves the hostname to public addresses only, makes direct HTTP requests using pinned connections while following redirects one hop at a time, and returns the final HTTP result.
+This service validates the URL, resolves the hostname to public addresses only, makes direct HTTP requests using pinned connections while following redirects one hop at a time, and returns the final HTTP result. Usage of the check endpoint is restricted to authenticated users.
 
 ## How it works
 
@@ -80,6 +80,12 @@ Validation rules:
 - the target host must resolve to a public IP address
 - every redirect target must satisfy the same rules
 
+The endpoint is restricted to authenticated users. The dispatcher performs the authentication and forwards the session's allowed groups in the `mu-auth-allowed-groups` header; requests that lack this header (or carry the empty group `<>`, i.e. an anonymous session) receive:
+
+- `401 Unauthorized`: no authenticated user session was provided
+
+This behavior is controlled by the `REQUIRE_AUTHENTICATION` environment variable. By default authentication is required. Set the variable to `false` to disable authentication.
+
 Successful response:
 
 ```json
@@ -97,6 +103,7 @@ The `status` field is a boolean:
 
 Error responses:
 
+- `401 Unauthorized`: the request carries no authenticated user session
 - `400 Bad Request`: missing, malformed, unsupported, or disallowed URL input
 - `502 Bad Gateway`: the URL could not be checked because the service could not resolve or fetch it safely
 

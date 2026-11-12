@@ -8,7 +8,29 @@ const REQUEST_TIMEOUT_MS = 10_000;
 const MAX_REDIRECTS = 20; // same limit as browsers and fetch
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 
+const REQUIRE_AUTHENTICATION = process.env.REQUIRE_AUTHENTICATION !== 'false';
+
 app.use(bodyParser.json());
+
+app.use('/check', (req, res, next) => {
+    if (!REQUIRE_AUTHENTICATION) {
+        return next();
+    }
+
+    const allowedGroups = req.get('mu-auth-allowed-groups');
+
+    if (
+        !REQUIRE_AUTHENTICATION ||
+        (allowedGroups?.trim() && allowedGroups.trim() !== '<>')
+    ) {
+        return next();
+    }
+
+    return res.status(401).json({
+        error: 'Authentication is required to use this service'
+    });
+
+});
 
 function isPrivateIPv4(ip) {
     const [a, b] = ip.split('.').map(Number);
