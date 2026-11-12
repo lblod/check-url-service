@@ -11,7 +11,7 @@ const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 
 const REQUIRE_AUTHENTICATION = process.env.REQUIRE_AUTHENTICATION !== 'false';
 const USER_AGENT =
-    process.env.VALIDATE_URL_USER_AGENT || 'check-url-service';
+    process.env.VALIDATE_URL_USER_AGENT || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/74.0.3729.169 Safari/537.36 LBLOD check url service';
 
 app.use(bodyParser.json());
 
