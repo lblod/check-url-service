@@ -9,6 +9,8 @@ const MAX_REDIRECTS = 20; // same limit as browsers and fetch
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 
 const REQUIRE_AUTHENTICATION = process.env.REQUIRE_AUTHENTICATION !== 'false';
+const USER_AGENT =
+    process.env.VALIDATE_URL_USER_AGENT || 'check-url-service';
 
 app.use(bodyParser.json());
 
@@ -29,7 +31,6 @@ app.use('/check', (req, res, next) => {
     return res.status(401).json({
         error: 'Authentication is required to use this service'
     });
-
 });
 
 function isPrivateIPv4(ip) {
@@ -278,7 +279,10 @@ app.post('/check', async (req, res) => {
             response = await fetch(currentUrl, {
                 dispatcher: agent,
                 redirect: 'manual',
-                signal
+                signal,
+                headers: {
+                    'user-agent': USER_AGENT
+                }
             });
 
             await response.body?.cancel();

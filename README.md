@@ -15,6 +15,7 @@ The service accepts a URL through `POST /check` and performs the following check
 - the hostname must resolve to a public address; private, loopback, link-local and other non-public addresses are rejected
 - requests are sent with `redirect: "manual"`; redirect responses (301, 302, 303, 307, 308) are followed one hop at a time, up to 20 redirects, and every redirect target goes through the same checks as the original URL (supported protocol, no credentials, public host)
 - the whole redirect chain is limited to 10 seconds
+- outgoing requests use the `User-Agent` configured via `VALIDATE_URL_USER_AGENT` (default: `check-url-service`); Node's default user agent is blocked by some sites
 - the response of the final hop is returned as JSON with the final URL, a boolean `status`, and the HTTP `statusCode`
 
 The implementation uses Node's built-in `fetch` and Undici with a pinned DNS lookup; every hop in a redirect chain is pinned to the addresses that were validated up front, so redirects can never lead the check to a private or internal host.
