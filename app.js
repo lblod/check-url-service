@@ -21,10 +21,7 @@ app.use('/check', (req, res, next) => {
 
     const allowedGroups = req.get('mu-auth-allowed-groups');
 
-    if (
-        !REQUIRE_AUTHENTICATION ||
-        (allowedGroups?.trim() && allowedGroups.trim() !== '<>')
-    ) {
+    if (allowedGroups?.trim() && allowedGroups.trim() !== '<>') {
         return next();
     }
 
