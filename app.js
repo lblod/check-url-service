@@ -5,7 +5,7 @@ import { lookup as dnsLookup } from 'node:dns/promises';
 import { BlockList, isIP } from 'node:net';
 
 const REQUEST_TIMEOUT_MS = 10_000;
-const MAX_REDIRECTS = 20; // same limit as browsers and fetch
+const MAX_REDIRECTS = 5;
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 
 const REQUIRE_AUTHENTICATION = process.env.REQUIRE_AUTHENTICATION !== 'false';
@@ -319,7 +319,13 @@ app.post('/check', async (req, res) => {
                 break;
             }
 
-            currentUrl = new URL(location, currentUrl);
+            const nextUrl = new URL(location, currentUrl);
+
+            if (currentUrl.protocol === 'https:' && nextUrl.protocol === 'http:') {
+                throw createCheckError('blocked', 'Redirect from https to http');
+            }
+
+            currentUrl = nextUrl;
 
             try {
                 assertAllowedUrl(currentUrl);
