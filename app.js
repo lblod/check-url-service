@@ -2,7 +2,7 @@ import { app, query, sparqlEscapeUri } from 'mu';
 import bodyParser from 'body-parser';
 import { Agent } from 'undici';
 import { lookup as dnsLookup } from 'node:dns/promises';
-import { isIP } from 'node:net';
+import { BlockList, isIP } from 'node:net';
 
 const REQUEST_TIMEOUT_MS = 10_000;
 const MAX_REDIRECTS = 20; // same limit as browsers and fetch
@@ -61,125 +61,42 @@ app.use('/check', async (req, res, next) => {
     }
 });
 
-function isPrivateIPv4(ip) {
-    const [a, b] = ip.split('.').map(Number);
-    return (
-        a === 0 || // 0.0.0.0/8
-        a === 10 || // 10.0.0.0/8
-        (a === 100 && b >= 64 && b <= 127) || // 100.64.0.0/10
-        a === 127 || // 127.0.0.0/8
-        (a === 169 && b === 254) || // 169.254.0.0/16
-        (a === 172 && b >= 16 && b <= 31) || // 172.16.0.0/12
-        (a === 192 && b === 168) || // 192.168.0.0/16
-        a >= 224 // multicast, reserved and broadcast ranges
-    );
-}
+const NON_PUBLIC_SUBNETS = [
+    ['0.0.0.0', 8, 'ipv4'], // this network
+    ['10.0.0.0', 8, 'ipv4'], // private
+    ['100.64.0.0', 10, 'ipv4'], // carrier-grade NAT
+    ['127.0.0.0', 8, 'ipv4'], // loopback
+    ['169.254.0.0', 16, 'ipv4'], // link-local
+    ['172.16.0.0', 12, 'ipv4'], // private
+    ['192.0.0.0', 24, 'ipv4'], // IETF protocol assignments
+    ['192.0.2.0', 24, 'ipv4'], // documentation
+    ['192.168.0.0', 16, 'ipv4'], // private
+    ['198.18.0.0', 15, 'ipv4'], // benchmarking
+    ['198.51.100.0', 24, 'ipv4'], // documentation
+    ['203.0.113.0', 24, 'ipv4'], // documentation
+    ['224.0.0.0', 3, 'ipv4'], // multicast and reserved
+    ['::', 96, 'ipv6'], // IPv4-compatible
+    ['::ffff:0:0:0', 96, 'ipv6'], // IPv4-translated
+    ['64:ff9b::', 96, 'ipv6'], // NAT64
+    ['64:ff9b:1::', 48, 'ipv6'], // local NAT64
+    ['100::', 64, 'ipv6'], // discard
+    ['2001::', 32, 'ipv6'], // Teredo
+    ['2001:db8::', 32, 'ipv6'], // documentation
+    ['2002::', 16, 'ipv6'], // 6to4
+    ['fc00::', 7, 'ipv6'], // unique local
+    ['fe80::', 10, 'ipv6'], // link-local
+    ['fec0::', 10, 'ipv6'], // site-local
+    ['ff00::', 8, 'ipv6'] // multicast
+];
 
-function parseIPv6Groups(part) {
-    if (!part) {
-        return [];
-    }
+const nonPublicAddresses = new BlockList();
 
-    const groups = [];
-
-    for (const chunk of part.split(':')) {
-        if (chunk.includes('.')) {
-            const octets = chunk.split('.').map(Number);
-
-            if (
-                octets.length !== 4 ||
-                octets.some((n) => !Number.isInteger(n) || n < 0 || n > 255)
-            ) {
-                return null;
-            }
-
-            groups.push((octets[0] << 8) | octets[1], (octets[2] << 8) | octets[3]);
-        } else {
-            const group = parseInt(chunk, 16);
-
-            if (!Number.isInteger(group) || group < 0 || group > 0xffff) {
-                return null;
-            }
-            groups.push(group);
-        }
-    }
-
-    return groups;
-}
-
-function expandIPv6(ip) {
-    const address = ip.toLowerCase();
-
-    if (!address.includes('::')) {
-        return parseIPv6Groups(address);
-    }
-
-    const parts = address.split('::');
-
-    if (parts.length !== 2) {
-        return null;
-    }
-
-    const [rawHead, rawTail] = parts;
-    const head = parseIPv6Groups(rawHead);
-    const tail = parseIPv6Groups(rawTail);
-
-    if (!head || !tail) {
-        return null;
-    }
-
-    const missingGroups = 8 - head.length - tail.length;
-
-    if (missingGroups < 1) {
-        return null;
-    }
-
-    return [...head, ...Array(missingGroups).fill(0), ...tail];
-}
-
-function isPrivateIPv6(ip) {
-    const groups = expandIPv6(ip);
-
-    if (!groups || groups.length !== 8) {
-        return true; // unparseable addresses are never trusted
-    }
-
-    if (groups.every((group) => group === 0)) {
-        return true; // ::
-    }
-
-    if (
-        groups.slice(0, 7).every((group) => group === 0) &&
-        groups[7] === 1
-    ) {
-        return true; // ::1
-    }
-
-    if (
-        groups.slice(0, 5).every((group) => group === 0) &&
-        groups[5] === 0xffff
-    ) {
-        const ipv4 = [
-            groups[6] >> 8,
-            groups[6] & 0xff,
-            groups[7] >> 8,
-            groups[7] & 0xff
-        ].join('.');
-
-        return isPrivateIPv4(ipv4); // IPv4-mapped addresses
-    }
-
-    const first = groups[0];
-
-    return (
-        (first & 0xfe00) === 0xfc00 || // Unique local fc00::/7
-        (first & 0xffc0) === 0xfe80 || // Link-local fe80::/10
-        (first & 0xff00) === 0xff00 // Multicast ff00::/8
-    );
+for (const [network, prefix, family] of NON_PUBLIC_SUBNETS) {
+    nonPublicAddresses.addSubnet(network, prefix, family);
 }
 
 function isPrivateAddress({ address, family }) {
-    return family === 4 ? isPrivateIPv4(address) : isPrivateIPv6(address);
+    return nonPublicAddresses.check(address, family === 6 ? 'ipv6' : 'ipv4');
 }
 
 function assertAllowedUrl(parsedUrl) {
