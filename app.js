@@ -1,9 +1,8 @@
-import { app } from 'mu';
+import { app, query, sparqlEscapeUri } from 'mu';
 import bodyParser from 'body-parser';
 import { Agent } from 'undici';
 import { lookup as dnsLookup } from 'node:dns/promises';
 import { isIP } from 'node:net';
-import { getSessionIdHeader, selectAccountBySession } from './session';
 
 const REQUEST_TIMEOUT_MS = 10_000;
 const MAX_REDIRECTS = 20; // same limit as browsers and fetch
@@ -12,15 +11,30 @@ const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 const REQUIRE_AUTHENTICATION = process.env.REQUIRE_AUTHENTICATION !== 'false';
 const USER_AGENT =
     process.env.VALIDATE_URL_USER_AGENT || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/74.0.3729.169 Safari/537.36 LBLOD check url service';
+const SESSION_GRAPH = 'http://mu.semte.ch/graphs/sessions';
+const USE_SUDO = process.env.ALLOW_MU_AUTH_SUDO === 'true';
 
 app.use(bodyParser.json());
+
+// A session is logged in when it has an account. One ASK answers that.
+async function checkSessionIsLoggedIn(sessionId) {
+    const result = await query(`
+        PREFIX session: <http://mu.semte.ch/vocabularies/session/>
+        ASK {
+            GRAPH ${sparqlEscapeUri(SESSION_GRAPH)} {
+                ${sparqlEscapeUri(sessionId)} session:account ?account .
+            }
+        }`, { sudo: USE_SUDO });
+
+    return result?.boolean === true;
+}
 
 app.use('/check', async (req, res, next) => {
     if (!REQUIRE_AUTHENTICATION) {
         return next();
     }
 
-    const sessionId = getSessionIdHeader(req);
+    const sessionId = req.get('mu-session-id');
 
     if (!sessionId) {
         return res.status(401).json({
@@ -29,9 +43,9 @@ app.use('/check', async (req, res, next) => {
     }
 
     try {
-        const { accountUri } = await selectAccountBySession(sessionId);
+        const isLoggedIn = await checkSessionIsLoggedIn(sessionId);
 
-        if (!accountUri) {
+        if (!isLoggedIn) {
             return res.status(401).json({
                 error: 'Invalid session'
             });
