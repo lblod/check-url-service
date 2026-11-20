@@ -119,12 +119,28 @@ function assertAllowedUrl(parsedUrl) {
     }
 }
 
-async function resolvePublicAddresses(hostname) {
+// Stop a promise when the request signal aborts.
+function stopOnAbort(promise, signal) {
+    if (signal.aborted) {
+        return Promise.reject(signal.reason);
+    }
+
+    return new Promise((resolve, reject) => {
+        const onAbort = () => reject(signal.reason);
+
+        signal.addEventListener('abort', onAbort, { once: true });
+        promise
+            .then(resolve, reject)
+            .finally(() => signal.removeEventListener('abort', onAbort));
+    });
+}
+
+async function resolvePublicAddresses(hostname, signal) {
     const family = isIP(hostname);
 
     const addresses = family
         ? [{ address: hostname, family }]
-        : await dnsLookup(hostname, { all: true, verbatim: true });
+        : await stopOnAbort(dnsLookup(hostname, { all: true, verbatim: true }), signal);
 
     if (!addresses.length || addresses.some(isPrivateAddress)) {
         throw createCheckError('blocked', 'The link must point to a public host');
@@ -264,7 +280,7 @@ app.post('/check', async (req, res) => {
             let addresses;
 
             try {
-                addresses = await resolvePublicAddresses(hostname);
+                addresses = await resolvePublicAddresses(hostname, signal);
             } catch (error) {
                 if (redirects === 0 && error.reason === 'blocked') {
                     return res.status(400).json({
