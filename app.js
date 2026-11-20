@@ -99,6 +99,11 @@ function isPrivateAddress({ address, family }) {
     return nonPublicAddresses.check(address, family === 6 ? 'ipv6' : 'ipv4');
 }
 
+// Tag an error with a reason so the route can pick the right answer.
+function createCheckError(reason, message) {
+    return Object.assign(new Error(message), { reason });
+}
+
 function assertAllowedUrl(parsedUrl) {
     if (parsedUrl.username || parsedUrl.password) {
         throw new Error('URLs containing credentials are not supported');
@@ -122,7 +127,7 @@ async function resolvePublicAddresses(hostname) {
         : await dnsLookup(hostname, { all: true, verbatim: true });
 
     if (!addresses.length || addresses.some(isPrivateAddress)) {
-        throw new Error('The link must point to a public host');
+        throw createCheckError('blocked', 'The link must point to a public host');
     }
 
     return addresses;
@@ -216,7 +221,19 @@ app.post('/check', async (req, res) => {
 
         for (let redirects = 0; ; redirects += 1) {
             const hostname = currentUrl.hostname.replace(/^\[|\]$/g, '');
-            const addresses = await resolvePublicAddresses(hostname);
+            let addresses;
+
+            try {
+                addresses = await resolvePublicAddresses(hostname);
+            } catch (error) {
+                if (redirects === 0 && error.reason === 'blocked') {
+                    return res.status(400).json({
+                        error: error.message
+                    });
+                }
+
+                throw error;
+            }
 
             await agent?.close();
             agent = createPinnedAgent(hostname, addresses);
