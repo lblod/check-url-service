@@ -175,6 +175,46 @@ function createPinnedAgent(hostname, addresses) {
     });
 }
 
+// Map a transport error to the reason we report for a dead target.
+function findFailureReason(error) {
+    if (error?.reason) {
+        return error.reason;
+    }
+
+    if (error?.name === 'TimeoutError') {
+        return 'timeout';
+    }
+
+    const code = String(error?.code ?? error?.cause?.code ?? '');
+
+    if (code === 'ERR_INVALID_URL') {
+        return 'redirect';
+    }
+
+    if (code === 'ENOTFOUND' || code === 'ENODATA' || code.startsWith('EAI_')) {
+        return 'dns';
+    }
+
+    if (code === 'ETIMEDOUT' || code === 'UND_ERR_CONNECT_TIMEOUT') {
+        return 'timeout';
+    }
+
+    if (
+        code.includes('CERT') ||
+        code.startsWith('ERR_TLS') ||
+        code.startsWith('ERR_SSL') ||
+        code === 'UNABLE_TO_VERIFY_LEAF_SIGNATURE'
+    ) {
+        return 'tls';
+    }
+
+    if (error?.message === 'fetch failed') {
+        return 'connect';
+    }
+
+    return null;
+}
+
 app.get('/', (req, res) => {
     res.send('Hello from the check-url-service.');
 });
@@ -214,9 +254,9 @@ app.post('/check', async (req, res) => {
 
     const signal = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
     let agent;
+    let currentUrl = parsedUrl;
 
     try {
-        let currentUrl = parsedUrl;
         let response;
 
         for (let redirects = 0; ; redirects += 1) {
@@ -254,7 +294,7 @@ app.post('/check', async (req, res) => {
             }
 
             if (redirects >= MAX_REDIRECTS) {
-                throw new Error('Too many redirects');
+                throw createCheckError('redirect', 'Too many redirects');
             }
 
             const location = response.headers.get('location');
@@ -264,7 +304,12 @@ app.post('/check', async (req, res) => {
             }
 
             currentUrl = new URL(location, currentUrl);
-            assertAllowedUrl(currentUrl);
+
+            try {
+                assertAllowedUrl(currentUrl);
+            } catch (error) {
+                throw createCheckError('blocked', error.message);
+            }
         }
 
         return res.json({
@@ -273,18 +318,21 @@ app.post('/check', async (req, res) => {
             statusCode: response.status
         });
     } catch (error) {
-        if (error?.code === 'ENOTFOUND') {
-            return res.json({
-                url: parsedUrl.href,
-                status: false,
-                statusCode: 404
+        const reason = findFailureReason(error);
+
+        console.error(`Link check failed for ${currentUrl.href} (${reason}):`, error);
+
+        if (!reason) {
+            return res.status(502).json({
+                error: 'Unable to check the URL'
             });
         }
 
-        console.error(`Link check failed for ${parsedUrl.href}:`, error);
-
-        return res.status(502).json({
-            error: 'Unable to check the URL'
+        return res.json({
+            url: currentUrl.href,
+            status: false,
+            statusCode: null,
+            reason
         });
     } finally {
         await agent?.close();
