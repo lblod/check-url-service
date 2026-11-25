@@ -13,8 +13,8 @@ The service accepts a URL through `POST /check` and performs the following check
 - credentials in the URL (`user:pass@host`) are rejected
 - only `https:` is allowed by default; `http:` is accepted only when `VALIDATE_URL_ALLOW_HTTP=true`
 - the hostname must resolve to a public address; private, loopback, link-local and other non-public addresses are rejected
-- requests are sent with `redirect: "manual"`; redirect responses (301, 302, 303, 307, 308) are followed one hop at a time, up to 20 redirects, and every redirect target goes through the same checks as the original URL (supported protocol, no credentials, public host)
-- the whole redirect chain is limited to 10 seconds
+- requests are sent with `redirect: "manual"`; redirect responses (301, 302, 303, 307, 308) are followed one hop at a time, up to 5 redirects, and every redirect target goes through the same checks as the original URL (supported protocol, no credentials, public host). A redirect from https to http is refused.
+- the whole chain, including every DNS lookup, is limited to 10 seconds
 - outgoing requests use the `User-Agent` configured via `VALIDATE_URL_USER_AGENT`; Node's default user agent is blocked by some sites
 - the response of the final hop is returned as JSON with the final URL, a boolean `status`, and the HTTP `statusCode`
 
@@ -44,6 +44,61 @@ Configure the dispatcher (`dispatcher.ex`) to send frontend requests to the serv
     forward conn, path, "http://check-url/"
   end
 ```
+
+### Network isolation (recommended)
+
+The service makes outbound requests to arbitrary URLs. Put it on a dedicated network as
+defence in depth. Share that network only with the peers it needs: the dispatcher
+(inbound) and the database (session lookup).
+
+```yaml
+services:
+  check-url:
+    image: lblod/check-url-service
+    networks:
+      - check-url-net
+    environment:
+      VALIDATE_URL_ALLOW_HTTP: "false"
+    labels:
+      - "logging=true"
+    restart: always
+    logging: *default-logging
+
+  dispatcher:
+    networks:
+      - default
+      - check-url-net
+
+  database:
+    networks:
+      - default
+      - check-url-net
+
+networks:
+  check-url-net: {}
+```
+
+This keeps the service off the default network. It cannot reach the triplestore
+(`virtuoso`), `identifier`, `resource`, `cache` or other services directly. It still
+reaches the dispatcher and `database`, which it needs.
+
+This is a second barrier. It does not replace the URL and IP checks in the service.
+Keep the following in mind:
+
+- Do not publish internal services on the host (`ports:`). A published port is reachable
+  from every Docker network through the host gateway.
+- Do not expose the Docker API over TCP and do not mount `/var/run/docker.sock`.
+- Do not use `network_mode: host`, `privileged`, or attach the service to the default
+  network.
+- The service can still reach the host gateway and the internet. The service's own IP
+  filter blocks RFC1918, loopback and link-local targets such as `169.254.169.254`.
+- The dispatcher is already public through `mu-identifier`. Reaching it from this
+  service adds no new surface. `database` is the ACL layer and the request carries no
+  session, so it is anonymous public read at worst.
+
+If you need a hard egress boundary, add an egress proxy on an `internal: true` network
+and move the IP filter there. That needs a proxy dispatcher and is not needed for the
+default deployment.
 
 ## API
 
@@ -81,42 +136,55 @@ Validation rules:
 - the target host must resolve to a public IP address
 - every redirect target must satisfy the same rules
 
-The endpoint is restricted to authenticated users. Unauthenticated calls recieve the response:
+#### Authentication
 
-- `401 Unauthorized`: no authenticated user session was provided
+The service asks the triplestore if the session has a `session:account` in `http://mu.semte.ch/graphs/sessions`.
 
-This behavior is controlled by the `REQUIRE_AUTHENTICATION` environment variable. By default authentication is required. Set the variable to `false` to disable authentication.
+On a sparql-parser stack, the service sends the scope `http://services.semantic.works/check-url-service`. `DEFAULT_MU_AUTH_SCOPE` overrides it. The app grants read on the sessions graph in that scope:
 
-The following variables used in the authentication can be adjusted:
+```lisp
+(supply-allowed-group "logged-in"
+  :parameters ()
+  :query "PREFIX session: <http://mu.semte.ch/vocabularies/session/>
+          SELECT ?account WHERE { <SESSION_ID> session:account ?account } LIMIT 1")
 
-- `ACCOUNT_GRAPH_TEMPLATE`
-- `SESSION_GRAPH`
-- `MU_APPLICATION_GRAPH`
-
-Successful response:
-
-```json
-{
-  "url": "https://example.com",
-  "status": true,
-  "statusCode": 200
-}
+(with-scope "http://services.semantic.works/check-url-service"
+  (grant (read)
+    :to-graph (sessions)
+    :for-allowed-group "logged-in"))
 ```
 
-The `status` field is a boolean:
+The group needs `:parameters ()`. sparql-parser adds the parameters of a group to the graph URI. With a parameter the grant goes to a graph that does not exist.
 
-- `true` when the final HTTP response is considered successful (`response.ok`)
-- `false` when the response is not successful or the request fails at the transport level
+On a mu-authorization stack there are no scopes. Set `ALLOW_MU_AUTH_SUDO: "true"` on the service. The service then asks the same question with sudo.
 
-Error responses:
+Without the grant and without sudo, every call gets 401.
 
-- `401 Unauthorized`: the request carries no authenticated user session
-- `400 Bad Request`: missing, malformed, unsupported, or disallowed URL input
-- `502 Bad Gateway`: the URL could not be checked because the service could not resolve or fetch it safely
+`REQUIRE_AUTHENTICATION: "false"` turns the check off.
+
+#### Responses
+
+- target responds: `200 { url, status, statusCode }`
+- target is dead or a redirect is refused: `200 { url, status: false, statusCode: null, reason }`
+- input we refuse, also a non-public first target: `400`
+- no session or not logged in: `401`
+- fault of the service: `502`
+- the session check itself fails: `503`
+
+`status` is `true` when the final response is successful (`response.ok`). A 404 or 500 from the target gives `status: false` and the real `statusCode`, without `reason`.
+
+For a dead target, `url` is the hop that failed. The reasons:
+
+- `dns`: the host name does not resolve.
+- `timeout`: the 10 seconds are over.
+- `tls`: the certificate is not valid.
+- `connect`: any other failure to connect.
+- `blocked`: a redirect goes to a target we refuse.
+- `redirect`: too many redirects, or a redirect with a broken `Location`.
 
 ## Notes
 
-- The service intentionally rejects links to private or local hosts.
+- The service rejects links to private or local hosts.
 - Redirects are followed one hop at a time.
-- A redirect chain that exceeds 20 redirects, or that redirects to a URL that is not allowed as input (for example plain `http:` while `VALIDATE_URL_ALLOW_HTTP` is not enabled), cannot be checked and results in a `502` response.
-- The entire redirect chain is limited to 10 seconds to avoid hanging on slow or unreachable endpoints.
+- A redirect chain that exceeds 5 redirects, or that redirects to a URL we refuse (for example plain `http:` while `VALIDATE_URL_ALLOW_HTTP` is not enabled, or from https to http), gives `status: false` with a reason.
+- The whole chain, including the DNS lookups, is limited to 10 seconds.
